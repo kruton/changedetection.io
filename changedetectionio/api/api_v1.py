@@ -3,7 +3,7 @@ from changedetectionio.strtobool import strtobool
 
 from flask_expects_json import expects_json
 from changedetectionio import queuedWatchMetaData
-from flask_restful import abort, Resource
+from quart_openapi import abort, Resource
 from flask import request, make_response
 import validators
 from . import auth

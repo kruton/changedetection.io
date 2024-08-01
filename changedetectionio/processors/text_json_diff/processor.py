@@ -6,6 +6,7 @@ import os
 import re
 import urllib3
 
+from changedetectionio.model import Watch
 from changedetectionio.processors import difference_detection_processor
 from changedetectionio.html_tools import PERL_STYLE_REGEX, cdata_in_document_to_text
 from changedetectionio import html_tools, content_fetchers
@@ -35,7 +36,7 @@ class PDFToHTMLToolNotFound(ValueError):
 # (set_proxy_from_list)
 class perform_site_check(difference_detection_processor):
 
-    def run_changedetection(self, watch, skip_when_checksum_same=True):
+    async def run_changedetection(self, watch: Watch.model, skip_when_checksum_same=True):
         changed_detected = False
         html_content = ""
         screenshot = False  # as bytes
@@ -47,7 +48,7 @@ class perform_site_check(difference_detection_processor):
         # Unset any existing notification error
         update_obj = {'last_notification_error': False, 'last_error': False}
 
-        url = watch.link
+        url = await watch.link
 
         self.screenshot = self.fetcher.screenshot
         self.xpath_data = self.fetcher.xpath_data
@@ -342,7 +343,7 @@ class perform_site_check(difference_detection_processor):
 
         if changed_detected:
             if watch.get('check_unique_lines', False):
-                has_unique_lines = watch.lines_contain_something_unique_compared_to_history(lines=stripped_text_from_html.splitlines())
+                has_unique_lines = await watch.lines_contain_something_unique_compared_to_history(lines=stripped_text_from_html.splitlines())
                 # One or more lines? unsure?
                 if not has_unique_lines:
                     logger.debug(f"check_unique_lines: UUID {watch.get('uuid')} didnt have anything new setting change_detected=False")

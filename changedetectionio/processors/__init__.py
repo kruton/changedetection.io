@@ -1,4 +1,7 @@
 from abc import abstractmethod
+from types import ModuleType
+from typing import Any, Optional, Protocol
+from changedetectionio.model import Watch
 from changedetectionio.strtobool import strtobool
 
 from copy import deepcopy
@@ -10,13 +13,14 @@ import importlib
 import pkgutil
 import inspect
 
+
 class difference_detection_processor():
 
     browser_steps = None
     datastore = None
     fetcher = None
     screenshot = None
-    watch = None
+    watch: Optional[Watch.model] = None
     xpath_data = None
 
     def __init__(self, *args, datastore, watch_uuid, **kwargs):
@@ -24,9 +28,12 @@ class difference_detection_processor():
         self.datastore = datastore
         self.watch = deepcopy(self.datastore.data['watching'].get(watch_uuid))
 
-    def call_browser(self):
+    async def call_browser(self):
         from requests.structures import CaseInsensitiveDict
         from changedetectionio.content_fetchers.exceptions import EmptyReply
+
+        if self.watch is None:
+            raise Exception("call_browser called without watch set")
 
         # Protect against file:// access
         if re.search(r'^file://', self.watch.get('url', '').strip(), re.IGNORECASE):
@@ -35,7 +42,7 @@ class difference_detection_processor():
                     "file:// type access is denied for security reasons."
                 )
 
-        url = self.watch.link
+        url = await self.watch.link
 
         # Requests, playwright, other browser via wss:// etc, fetch_extra_something
         prefer_fetch_backend = self.watch.get('fetch_backend', 'system')
@@ -154,8 +161,8 @@ class difference_detection_processor():
         # After init, call run_changedetection() which will do the actual change-detection
 
     @abstractmethod
-    def run_changedetection(self, watch, skip_when_checksum_same=True):
-        update_obj = {'last_notification_error': False, 'last_error': False}
+    async def run_changedetection(self, watch, skip_when_checksum_same=True) -> tuple[bool, dict[str, bool | str], str]:
+        update_obj: dict[str, bool | str] = {'last_notification_error': False, 'last_error': False}
         some_data = 'xxxxx'
         update_obj["previous_md5"] = hashlib.md5(some_data.encode('utf-8')).hexdigest()
         changed_detected = False
@@ -200,7 +207,7 @@ def find_processors():
     return processors
 
 
-def get_parent_module(module):
+def get_parent_module(module: ModuleType) -> Optional[ModuleType]:
     module_name = module.__name__
     if '.' not in module_name:
         return None  # Top-level module has no parent
@@ -210,7 +217,7 @@ def get_parent_module(module):
     except Exception as e:
         pass
 
-    return False
+    return None
 
 
 
@@ -222,7 +229,7 @@ def get_custom_watch_obj_for_processor(processor_name):
     if custom_watch_obj:
         # Parent of .processor.py COULD have its own Watch implementation
         parent_module = get_parent_module(custom_watch_obj[0])
-        if hasattr(parent_module, 'Watch'):
+        if parent_module is not None and hasattr(parent_module, 'Watch'):
             watch_class = parent_module.Watch
 
     return watch_class
@@ -242,3 +249,7 @@ def available_processors():
 
     return available
 
+
+class ProcessorModuleProto(Protocol):
+    perform_site_check: type[difference_detection_processor]
+    ...

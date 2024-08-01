@@ -13,7 +13,7 @@
 #
 
 from changedetectionio.strtobool import strtobool
-from flask import Blueprint, request, make_response
+from quart import Blueprint, request, make_response
 import os
 
 from changedetectionio.store import ChangeDetectionStore
@@ -95,7 +95,7 @@ def construct_blueprint(datastore: ChangeDetectionStore):
 
 
     @login_optionally_required
-    @browser_steps_blueprint.route("/browsersteps_start_session", methods=['GET'])
+    @browser_steps_blueprint.route("/browsersteps_start_session", methods=['GET'], endpoint='browsersteps_start_session')
     def browsersteps_start_session():
         # A new session was requested, return sessionID
 
@@ -115,9 +115,9 @@ def construct_blueprint(datastore: ChangeDetectionStore):
         return {'browsersteps_session_id': browsersteps_session_id}
 
     @login_optionally_required
-    @browser_steps_blueprint.route("/browsersteps_image", methods=['GET'])
-    def browser_steps_fetch_screenshot_image():
-        from flask import (
+    @browser_steps_blueprint.route("/browsersteps_image", methods=['GET'], endpoint='browser_steps_fetch_screenshot_image')
+    async def browser_steps_fetch_screenshot_image():
+        from quart import (
             make_response,
             request,
             send_from_directory,
@@ -129,11 +129,11 @@ def construct_blueprint(datastore: ChangeDetectionStore):
         filename = f"step_before-{step_n}.jpeg" if request.args.get('type', '') == 'before' else f"step_{step_n}.jpeg"
 
         if step_n and watch and os.path.isfile(os.path.join(watch.watch_data_dir, filename)):
-            response = make_response(send_from_directory(directory=watch.watch_data_dir, path=filename))
+            response = await make_response(send_from_directory(directory=watch.watch_data_dir, file_name=filename))
             response.headers['Content-type'] = 'image/jpeg'
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             response.headers['Pragma'] = 'no-cache'
-            response.headers['Expires'] = 0
+            response.headers['Expires'] = '0'
             return response
 
         else:
@@ -205,7 +205,7 @@ def construct_blueprint(datastore: ChangeDetectionStore):
         # Use send_file() which is way faster than read/write loop on bytes
         import json
         from tempfile import mkstemp
-        from flask import send_file
+        from quart import send_file
         tmp_fd, tmp_file = mkstemp(text=True, suffix=".json", prefix="changedetectionio-")
 
         output = json.dumps({'screenshot': "data:image/jpeg;base64,{}".format(

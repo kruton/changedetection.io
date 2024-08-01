@@ -1,22 +1,28 @@
 # Used by Pyppeteer
 pyee
 
-eventlet>=0.36.1 # fixes SSL error on Python 3.12
 feedgen~=0.9
-flask-compress
-# 0.6.3 included compatibility fix for werkzeug 3.x (2.x had deprecation of url handlers)
-flask-login>=0.6.3
+
+quart
+quart_cors
+quart_flask_patch
+quart-compress2
+
 flask-paginate
 flask_expects_json~=1.7
+flask_login
 flask_restful
-flask_cors # For the Chrome extension to operate
-flask_wtf~=1.2
-flask~=2.3
+flask_wtf~=1.2 # works with Quart-Flask-Patch
+
 inscriptis~=2.2
 pytz
 timeago~=1.0
 validators~=0.21
 
+hypercorn
+aiohttp
+aiofiles
+aioshutil
 
 # Set these versions together to avoid a RequestsDependencyWarning
 # >= 2.26 also adds Brotli support if brotli is installed
@@ -59,7 +65,7 @@ elementpath==4.1.5
 
 selenium~=4.14.0
 
-werkzeug~=3.0
+werkzeug
 
 # Templating, so far just in the URLs but in the future can be for the notifications also
 jinja2~=3.1

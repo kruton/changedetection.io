@@ -3,7 +3,7 @@ import chardet
 import hashlib
 import os
 import requests
-from changedetectionio import strtobool
+from changedetectionio.strtobool import strtobool
 from changedetectionio.content_fetchers.exceptions import BrowserStepsInUnsupportedFetcher, EmptyReply, Non200ErrorCodeReceived
 from changedetectionio.content_fetchers.base import Fetcher
 

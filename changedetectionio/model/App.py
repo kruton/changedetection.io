@@ -1,4 +1,5 @@
 from os import getenv
+import aiofiles
 from changedetectionio.notification import (
     default_notification_body,
     default_notification_format,
@@ -62,13 +63,13 @@ class model(dict):
         self.update(self.base_config)
 
 
-def parse_headers_from_text_file(filepath):
+async def parse_headers_from_text_file(filepath):
     headers = {}
-    with open(filepath, 'r') as f:
-        for l in f.readlines():
-            l = l.strip()
-            if not l.startswith('#') and ':' in l:
-                (k, v) = l.split(':')
+    async with aiofiles.open(filepath, 'r') as f:
+        async for line in f:
+            line = line.strip()
+            if not line.startswith('#') and ':' in line:
+                (k, v) = line.split(':')
                 headers[k.strip()] = v.strip()
 
     return headers

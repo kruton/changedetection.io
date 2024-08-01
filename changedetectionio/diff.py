@@ -1,5 +1,5 @@
 import difflib
-from typing import List, Iterator, Union
+from typing import Any, List, Iterator, Union
 
 def same_slicer(lst: List[str], start: int, end: int) -> List[str]:
     """Return a slice of the list, or a single element if start == end."""
@@ -91,7 +91,7 @@ def render_diff(
         include_change_type_prefix=include_change_type_prefix
     )
 
-    def flatten(lst: List[Union[str, List[str]]]) -> str:
+    def flatten(lst: List[str | List[Any]]) -> str:
         return line_feed_sep.join(flatten(x) if isinstance(x, list) else x for x in lst)
 
-    return flatten(rendered_diff)
+    return flatten(list(rendered_diff))

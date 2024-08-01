@@ -1,3 +1,5 @@
+import asyncio
+from typing import Optional
 from changedetectionio.strtobool import strtobool
 
 from flask import (
@@ -7,16 +9,16 @@ from flask import (
 from . model import App, Watch
 from copy import deepcopy, copy
 from os import path, unlink
-from threading import Lock
+from asyncio import AbstractEventLoop, Lock, Task
 import json
 import os
 import re
 import requests
 import secrets
-import threading
 import time
 import uuid as uuid_builder
 from loguru import logger
+import aiofiles.os
 
 from .processors import get_custom_watch_obj_for_processor
 from .processors.restock_diff import Restock
@@ -48,11 +50,12 @@ class ChangeDetectionStore:
         logger.info(f"Datastore path is '{self.json_store_path}'")
         self.needs_write = False
         self.start_time = time.time()
-        self.stop_thread = False
+        self.stop_thread = False # TODO(kruton): remove this
         # Base definition for all watchers
         # deepcopy part of #569 - not sure why its needed exactly
         self.generic_definition = deepcopy(Watch.model(datastore_path = datastore_path, default={}))
 
+        # TODO(kruton): Move this to a separate async def so we can use aiofiles
         if path.isfile('changedetectionio/source.txt'):
             with open('changedetectionio/source.txt') as f:
                 # Should be set in Dockerfile to look for /source.txt , this will give us the git commit #
@@ -96,13 +99,15 @@ class ChangeDetectionStore:
         except (FileNotFoundError):
             if include_default_watches:
                 logger.critical(f"No JSON DB found at {self.json_store_path}, creating JSON store at {self.datastore_path}")
-                self.add_watch(url='https://news.ycombinator.com/',
-                               tag='Tech news',
-                               extras={'fetch_backend': 'html_requests'})
+                async def add_watch_async():
+                    await self.add_watch(url='https://news.ycombinator.com/',
+                                tag='Tech news',
+                                extras={'fetch_backend': 'html_requests'})
 
-                self.add_watch(url='https://changedetection.io/CHANGELOG.txt',
-                               tag='changedetection.io',
-                               extras={'fetch_backend': 'html_requests'})
+                    await self.add_watch(url='https://changedetection.io/CHANGELOG.txt',
+                                tag='changedetection.io',
+                                extras={'fetch_backend': 'html_requests'})
+                asyncio.gather(add_watch_async())
 
             updates_available = self.get_updates_available()
             self.__data['settings']['application']['schema_version'] = updates_available.pop()
@@ -143,7 +148,11 @@ class ChangeDetectionStore:
         self.needs_write = True
 
         # Finally start the thread that will manage periodic data saves to JSON
-        save_data_thread = threading.Thread(target=self.save_datastore).start()
+        # TODO(kruton): move this to a startup in main
+        # save_data_thread = threading.Thread(target=self.save_datastore).start()
+
+    def start_save_data_task(self, loop: AbstractEventLoop) -> Task:
+        return loop.create_task(self.save_datastore())
 
     def rehydrate_entity(self, uuid, entity, processor_override=None):
         """Set the dict back to the dict Watch object"""
@@ -170,22 +179,25 @@ class ChangeDetectionStore:
         self.__data['settings']['application']['password'] = False
         self.needs_write = True
 
-    def update_watch(self, uuid, update_obj):
+    async def update_watch(self, uuid, update_obj):
 
         # It's possible that the watch could be deleted before update
         if not self.__data['watching'].get(uuid):
             return
 
-        with self.lock:
+        await self.lock.acquire()
 
-            # In python 3.9 we have the |= dict operator, but that still will lose data on nested structures...
-            for dict_key, d in self.generic_definition.items():
-                if isinstance(d, dict):
-                    if update_obj is not None and dict_key in update_obj:
-                        self.__data['watching'][uuid][dict_key].update(update_obj[dict_key])
-                        del (update_obj[dict_key])
+        # In python 3.9 we have the |= dict operator, but that still will lose data on nested structures...
+        for dict_key, d in self.generic_definition.items():
+            if isinstance(d, dict):
+                if update_obj is not None and dict_key in update_obj:
+                    self.__data['watching'][uuid][dict_key].update(update_obj[dict_key])
+                    del (update_obj[dict_key])
 
-            self.__data['watching'][uuid].update(update_obj)
+        self.__data['watching'][uuid].update(update_obj)
+
+        self.lock.release()
+
         self.needs_write = True
 
     @property
@@ -226,33 +238,33 @@ class ChangeDetectionStore:
         return d
 
     # Delete a single watch by UUID
-    def delete(self, uuid):
+    async def delete(self, uuid):
         import pathlib
-        import shutil
+        import aioshutil
 
-        with self.lock:
+        async with self.lock:
             if uuid == 'all':
                 self.__data['watching'] = {}
 
                 # GitHub #30 also delete history records
                 for uuid in self.data['watching']:
                     path = pathlib.Path(os.path.join(self.datastore_path, uuid))
-                    if os.path.exists(path):
-                        shutil.rmtree(path)
+                    if await aiofiles.os.path.exists(path):
+                        await aioshutil.rmtree(path)
 
             else:
                 path = pathlib.Path(os.path.join(self.datastore_path, uuid))
-                if os.path.exists(path):
-                    shutil.rmtree(path)
+                if await aiofiles.os.path.exists(path):
+                    await aioshutil.rmtree(path)
                 del self.data['watching'][uuid]
 
         self.needs_write_urgent = True
 
     # Clone a watch by UUID
-    def clone(self, uuid):
+    async def clone(self, uuid):
         url = self.data['watching'][uuid].get('url')
         extras = self.data['watching'][uuid]
-        new_uuid = self.add_watch(url=url, extras=extras)
+        new_uuid = await self.add_watch(url=url, extras=extras)
         return new_uuid
 
     def url_exists(self, url):
@@ -269,7 +281,7 @@ class ChangeDetectionStore:
         self.__data['watching'][uuid].clear_watch()
         self.needs_write_urgent = True
 
-    def add_watch(self, url, tag='', extras=None, tag_uuids=None, write_to_disk_now=True):
+    async def add_watch(self, url, tag='', extras=None, tag_uuids=None, write_to_disk_now=True):
 
         if extras is None:
             extras = {}
@@ -331,7 +343,7 @@ class ChangeDetectionStore:
             for t in tag.split(','):
                 # for each stripped tag, add tag as UUID
                 for a_t in t.split(','):
-                    tag_uuid = self.add_tag(a_t)
+                    tag_uuid = await self.add_tag(a_t)
                     apply_extras['tags'].append(tag_uuid)
 
         # Or if UUIDs given directly
@@ -359,12 +371,12 @@ class ChangeDetectionStore:
             apply_extras['date_created'] = int(time.time())
 
         new_watch.update(apply_extras)
-        new_watch.ensure_data_dir_exists()
+        await new_watch.ensure_data_dir_exists()
         self.__data['watching'][new_uuid] = new_watch
 
 
         if write_to_disk_now:
-            self.sync_to_json()
+            await self.sync_to_json()
 
         logger.debug(f"Added '{url}'")
 
@@ -379,7 +391,7 @@ class ChangeDetectionStore:
 
         return False
 
-    def sync_to_json(self):
+    async def sync_to_json(self):
         logger.info("Saving JSON..")
         try:
             data = deepcopy(self.__data)
@@ -387,7 +399,7 @@ class ChangeDetectionStore:
             # Try again in 15 seconds
             time.sleep(15)
             logger.error(f"! Data changed when writing to JSON, trying again.. {str(e)}")
-            self.sync_to_json()
+            await self.sync_to_json()
             return
         else:
 
@@ -395,18 +407,21 @@ class ChangeDetectionStore:
                 # Re #286  - First write to a temp file, then confirm it looks OK and rename it
                 # This is a fairly basic strategy to deal with the case that the file is corrupted,
                 # system was out of memory, out of RAM etc
-                with open(self.json_store_path+".tmp", 'w') as json_file:
-                    json.dump(data, json_file, indent=4)
-                os.replace(self.json_store_path+".tmp", self.json_store_path)
+                async with aiofiles.open(self.json_store_path+".tmp", 'w') as json_file:
+                    json_data = json.dumps(data, indent=4)
+                    await json_file.write(json_data)
+                await aiofiles.os.replace(self.json_store_path+".tmp", self.json_store_path)
             except Exception as e:
                 logger.error(f"Error writing JSON!! (Main JSON file save was skipped) : {str(e)}")
 
             self.needs_write = False
             self.needs_write_urgent = False
 
+    # TODO(kruton): remove this since we should signal when things should be saved asynchronously
+    #
     # Thread runner, this helps with thread/write issues when there are many operations that want to update the JSON
     # by just running periodically in one thread, according to python, dict updates are threadsafe.
-    def save_datastore(self):
+    async def save_datastore(self):
 
         while True:
             if self.stop_thread:
@@ -423,12 +438,12 @@ class ChangeDetectionStore:
                 return
 
             if self.needs_write or self.needs_write_urgent:
-                self.sync_to_json()
+                await self.sync_to_json()
 
             # Once per minute is enough, more and it can cause high CPU usage
             # better here is to use something like self.app.config.exit.wait(1), but we cant get to 'app' from here
             for i in range(120):
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
                 if self.stop_thread or self.needs_write_urgent:
                     break
 
@@ -452,7 +467,7 @@ class ChangeDetectionStore:
                     unlink(item)
 
     @property
-    def proxy_list(self):
+    def proxy_list(self) -> Optional[dict[str, dict[str, str]]]:
         proxy_list = {}
         proxy_list_file = os.path.join(self.datastore_path, 'proxies.json')
 
@@ -484,7 +499,7 @@ class ChangeDetectionStore:
         :return: proxy "key" id
         """
 
-        if self.proxy_list is None:
+        if not self.proxy_list:
             return None
 
         # If it's a valid one
@@ -570,7 +585,7 @@ class ChangeDetectionStore:
 
         return ret
 
-    def add_tag(self, name):
+    async def add_tag(self, name):
         # If name exists, return that
         n = name.strip().lower()
         logger.debug(f">>> Adding new tag - '{n}'")
@@ -584,7 +599,7 @@ class ChangeDetectionStore:
 
         # Eventually almost everything todo with a watch will apply as a Tag
         # So we use the same model as a Watch
-        with self.lock:
+        async with self.lock:
             from .model import Tag
             new_tag = Tag.model(datastore_path=self.datastore_path, default={
                 'title': name.strip(),
@@ -839,16 +854,19 @@ class ChangeDetectionStore:
 
     # Create tag objects and their references from existing tag text
     def update_12(self):
-        i = 0
-        for uuid, watch in self.data['watching'].items():
-            # Split out and convert old tag string
-            tag = watch.get('tag')
-            if tag:
-                tag_uuids = []
-                for t in tag.split(','):
-                    tag_uuids.append(self.add_tag(name=t))
+        async def update_12_internal():
+            i = 0
+            for uuid, watch in self.data['watching'].items():
+                # Split out and convert old tag string
+                tag = watch.get('tag')
+                if tag:
+                    tag_uuids = []
+                    for t in tag.split(','):
+                        tag_uuids.append(await self.add_tag(name=t))
 
-                self.data['watching'][uuid]['tags'] = tag_uuids
+                    self.data['watching'][uuid]['tags'] = tag_uuids
+
+        asyncio.run(update_12_internal())
 
     # #1775 - Update 11 did not update the records correctly when adding 'date_created' values for sorting
     def update_13(self):
