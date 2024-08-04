@@ -4,7 +4,7 @@ import time
 from threading import Thread
 
 import pytest
-from changedetectionio import changedetection_app
+from changedetectionio.__main__ import changedetection_app
 from changedetectionio import store
 import os
 import sys
