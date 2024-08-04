@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional
+import signal
 
 import quart_flask_patch
 from quart import Quart
@@ -20,17 +20,21 @@ from loguru import logger
 from . import __version__
 
 
-# # Parent wrapper or OS sends us a SIGTERM/SIGINT, do everything required for a clean shutdown
-# def sigshutdown_handler(_signo, _stack_frame):
-#     name = signal.Signals(_signo).name
-#     logger.critical(f'Shutdown: Got Signal - {name} ({_signo}), Saving DB to disk and calling shutdown')
-#     datastore.sync_to_json()
-#     logger.success('Sync JSON to disk complete.')
-#     # This will throw a SystemExit exception, because eventlet.wsgi.server doesn't know how to deal with it.
-#     # Solution: move to gevent or other server in the future (#2014)
-#     datastore.stop_thread = True
-#     app.config["exit"].set()
-#     sys.exit()
+class SigShutdownHandler(object):
+    def __init__(self, datastore: ChangeDetectionStore, shutdown_trigger: asyncio.Event):
+        self.datastore = datastore
+        self.shutdown_trigger = shutdown_trigger
+
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGTERM, lambda: self._signal_handler("SIGTERM"))
+        loop.add_signal_handler(signal.SIGINT, lambda: self._signal_handler("SIGINT"))
+
+    def _signal_handler(self, signame):
+        logger.critical(f'Shutdown: Got Signal - {signame}, shutting down')
+
+        self.datastore.stop_thread = True
+        self.shutdown_trigger.set()
+
 
 def handle_exception(loop, context):
     if "exception" in context:
@@ -140,15 +144,11 @@ def create_application() -> Quart:
 
     app = changedetection_app(app_config, datastore)
 
-    # signal.signal(signal.SIGTERM, sigshutdown_handler)
-    # signal.signal(signal.SIGINT, sigshutdown_handler)
-
     # Go into cleanup mode
     if do_cleanup:
         datastore.remove_unused_snapshots()
 
     app.config['datastore_path'] = datastore_path
-
 
     @app.context_processor
     def inject_version():
@@ -191,22 +191,24 @@ def create_application() -> Quart:
 app = create_application()
 
 async def main():
-    loop = asyncio.get_running_loop()
+    loop = asyncio.get_event_loop()
     # loop.set_exception_handler(handle_exception)
 
     config = Config()
     config.bind = ["0.0.0.0:5000"]
 
     from .__main__ import app
-    server_task = serve(app, config)
-
     debug_log = app.config["notification_debug_log"]
-    datastore = app.config["DATASTORE"]
-    exit_ev = app.config["exit"]
+    datastore: ChangeDetectionStore = app.config["DATASTORE"]
+    exit_ev: asyncio.Event = app.config["exit"]
+
+    server_task = serve(app, config, shutdown_trigger=exit_ev.wait)
 
     workers_task = loop.create_task(WorkerManager(datastore, exit_ev).start())
     notification_task = loop.create_task(NotificationRunner(datastore, exit_ev, debug_log).start())
     save_data_task = datastore.start_save_data_task(loop)
+
+    handler = SigShutdownHandler(datastore, exit_ev)
 
     tasks = [
         server_task,
@@ -214,7 +216,11 @@ async def main():
         notification_task,
         save_data_task,
     ]
-    await asyncio.gather(server_task)
+    await asyncio.gather(*tasks)
+
+    await datastore.sync_to_json()
+    logger.success('Sync JSON to disk complete. Exiting')
+
 
 if __name__ == "__main__":
     # replace this with something like:

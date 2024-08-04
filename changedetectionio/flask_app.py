@@ -173,7 +173,7 @@ def changedetection_app(config: dict[str, str], datastore: ChangeDetectionStore)
     # Stop browser caching of assets
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
-    app.config["exit"] = Event()
+    app.config["exit"] = asyncio.Event()
 
     app.config["NEW_VERSION_AVAILABLE"] = False
 
