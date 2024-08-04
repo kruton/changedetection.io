@@ -1316,7 +1316,7 @@ def changedetection_app(config: dict[str, str], datastore: ChangeDetectionStore)
                              compresslevel=8) as zipObj:
 
             # Be sure we're written fresh
-            datastore.sync_to_json()
+            await datastore.sync_to_json()
 
             # Add the index
             zipObj.write(os.path.join(datastore.datastore_path, "url-watches.json"), arcname="url-watches.json")
